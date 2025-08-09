@@ -18,6 +18,7 @@ from WebScrape import scrape_and_extract
 from tools import smart_data_loader, python_repl_tool, duckdb_query_tool , scrape_web_page
 from TableSelector import select_best_tables_by_metadata
 from MostAppropriateTableidx import select_best_dataframe
+import duckdb # Make sure duckdb is imported
 
 from utils import (
     load_csv_or_excel,
@@ -39,7 +40,7 @@ key=os.getenv("OPENAI_API_KEY")
 
 
 llm = ChatOpenAI(
-    model_name="gpt-5-nano",
+    model_name="gpt-5-mini",
     openai_api_key=key,
     openai_api_base="https://api.openai.com/v1",
     )
@@ -117,6 +118,25 @@ class AgentState(TypedDict):
     # Dedicated field for the DataFrame to prevent errors
     dataframe_for_analysis: Optional[pd.DataFrame]
 
+    #Classification
+
+        # The user's original, complex question
+    original_question: str
+
+    # The list of deconstructed sub-tasks
+    sub_tasks: List[dict]
+
+    # The current task being worked on
+    current_task: dict
+
+    # A dictionary to store the answers as they are completed
+    # Using Annotated for the add operator is good practice for accumulation
+    completed_tasks: dict
+
+    # The final, synthesized answer for the user
+    final_answer: str
+
+
 
 
 # --- Node Definitions ---
@@ -168,6 +188,347 @@ class AgentState(TypedDict):
 
         
 #     return state
+
+
+
+def sql_worker_node(state: AgentState):
+    """
+    Generates a DuckDB SQL query to answer a single question based on the
+    full context provided about the remote Parquet dataset.
+    """
+    print("--- Entering SQL Worker Node ---")
+    
+    # For this task, the 'question' field will contain the entire user prompt
+    # with the schema, sample query, and all sub-questions.
+    full_context_and_questions = state['question']
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         """You are an expert SQL data analyst. Your task is to write a single, executable SQL query to answer user's questions based on the extensive context they provide.
+
+         The user's prompt will contain:
+         1. A description of a dataset which might be even located in an S3 bucket or a Datframe Provided.
+         2. The schema of the Parquet files.
+         3. An example query showing how to access the data.
+         4. A JSON object with one or more questions.
+
+         Your instructions are:
+         - Your output MUST be ONLY the raw SQL query. No explanations.
+         - The query must be self-contained. It MUST include the necessary `INSTALL httpfs; LOAD httpfs;` and `INSTALL parquet; LOAD parquet;` commands at the beginning.
+         - The `FROM` clause must correctly reference correct path provided in the user's context.
+         """),
+        ("user",
+         """--- ORIGINAL FULL PROMPT ---
+         {original_question}
+
+         --- CURRENT SUB-QUESTION ---
+         {current_sub_question}
+         """)
+
+    ])
+    
+    sql_chain = prompt | llm
+    result = sql_chain.invoke({
+        "original_question": state['original_question'],
+        "current_sub_question": state['question'] # state['question'] was set by the preparer
+    })
+    
+    print(f"--- Generated SQL Query ---\n{result.content}\n--------------------")
+    state['plan'] = result.content
+    return state
+
+import duckdb
+
+def sql_executor_node(state: AgentState):
+    """
+    Connects to an in-memory DuckDB instance and executes a raw SQL query.
+    """
+    print("--- Entering SQL Executor Node ---")
+    sql_query = state.get('plan')
+    
+    if not sql_query:
+        state['execution_error'] = "No SQL query was provided to the executor."
+        state['task_type'] = 'error'
+        return state
+
+    try:
+        # Connect to a fresh in-memory database
+        con = duckdb.connect(database=':memory:', read_only=False)
+        
+        # Execute the query (which includes its own INSTALL/LOAD commands)
+        # and return the result as a pandas DataFrame.
+
+        result_df = con.execute(sql_query).df()
+        print(f"Result_DF_Sql_is--------------------------------{result_df}")
+
+        execution_result = result_df.to_string()
+        
+        # 2. Save the ACTUAL DataFrame object for the next node in the plan
+        dataframe_for_analysis = result_df
+
+        
+
+        state['execution_result'] = result_df.to_string()
+
+        return {
+            "execution_result": execution_result,
+            "dataframe_for_analysis": dataframe_for_analysis
+        }
+
+        
+    except Exception as e:
+        state['execution_error'] = f"An error occurred during SQL execution: {e}"
+
+    print(f"Result_DF_Sql_is--------------------------------{state['execution_result']}")
+    return state
+
+def llm_synthesizer_node(state: AgentState):
+    """
+    Uses an LLM to take all the completed tasks and synthesize the final
+    {q1: ans1, q2: ans2, ...} JSON object.
+    """
+    print("--- Entering LLM Synthesizer Node ---")
+    
+    # Prepare the context for the LLM
+    completed_tasks = state.get('completed_tasks', {})
+    
+    # Create a simple, readable string of the results for the prompt
+    results_summary = ""
+    for question, answer in completed_tasks.items():
+        results_summary += f"Question: {question}\nAnswer: {answer}\n---\n"
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         """You are an expert report synthesizer. Your job is to take a list of questions and their corresponding raw answers and format them into a clean, final JSON object.
+
+         The final JSON object should map a simplified key (like "q1", "q2") to the answer for each question.
+
+         - Clean up the answers if necessary (e.g., remove unnecessary whitespace or formatting).
+         - Ensure your final output is ONLY the raw JSON object, with no surrounding text or markdown.
+         """),
+        ("user",
+         """Please synthesize the following results into the final JSON report:
+
+         {results_summary}""")
+    ])
+    
+    synthesis_chain = prompt | llm
+    result = synthesis_chain.invoke({"results_summary": results_summary})
+    
+    # The result from the LLM is the final, clean JSON string
+    final_answer_str = result.content.strip()
+    
+    print(f"--- Final Synthesized Report --- \n{final_answer_str}")
+    
+    # Return the final update to the state
+    return {"final_answer": final_answer_str}
+
+
+
+# def question_deconstructor_node(state: AgentState):
+#     """
+#     The Deconstructor: Analyzes the original question and breaks it down
+#     into a structured list of sub-tasks.
+#     """
+#     print("--- Entering Question Deconstructor Node ---")
+    
+#     prompt = ChatPromptTemplate.from_messages([
+#         ("system",
+#          """You are an expert project manager. Your job is to analyze a user's complex request and break it down into a list of individual, self-contained tasks.
+
+#          You must classify each task into one of the following types: `sql_query`, `python_analysis`, `web_scraping`, or `summarization_qa`.
+
+#          Your output MUST be a JSON list of dictionaries. Each dictionary must have two keys: "type" and "question".
+
+#         --- HIGHEST PRIORITY RULE: URL DETECTION ---
+#          If the user's request contains a URL for a website, you MUST classify that task as `web_scraping`. Do not choose any other type for tasks involving URLs.
+
+
+#         --- IMPORTANT RULE #1 ---
+#          Do not infer or add extra steps like summarization unless the user explicitly asks for it.
+
+#          --- IMPORTANT RULE #2 ---
+#          IF THERE ARE MULTIPLE QUESTIONS BELONGING TO SAME TYPE OF TASK THEN AGGREGATE THOSE QUESTIONS LIKE 
+#             EXAMPLE:{{
+#              "type": "python_analysis",
+#              "question:"
+#                     "q1. How many $2 bn movies were released before 2000?
+#                     q2. Which is the earliest film that grossed over $1.5 bn?
+#                     q3. What's the correlation between the Rank and Peak?"
+#            }}
+
+#          --- IMPORTANT RULE #4: SELF-CONTAINED PYTHON TASKS ---
+#          If a task requires fetching data from a remote source (like S3) AND performing a Python-specific action (like plotting), classify it as `python_analysis`. The "question" for that step must be a complete, self-contained instruction to BOTH fetch the data AND perform the analysis.
+
+#          Example of a single step:
+#          User Request: "Process the attached CSV file and return a DataFrame with specific columns and data types."
+#          Your Output:
+#          [
+#            {{
+#              "type": "python_analysis",
+#              "question": "Process the attached CSV file and return a DataFrame with specific columns and data types."
+#            }}
+#          ]
+
+#          Example of multiple steps with a self-contained Python task:
+#          User Request: "Which high court disposed the most cases from 2019-2022? Also, plot the delay by year for court=33_10 from the S3 dataset."
+#          Your Output:
+#          [
+#            {{
+#              "type": "sql_query",
+#              "question": "Using the dataset at 's3://indian-high-court-judgments/...', which high court disposed the most cases from 2019 - 2022?"
+#            }},
+#            {{
+#              "type": "python_analysis",
+#              "question": "Using DuckDB, first fetch the 'year' and the delay in days (decision_date - date_of_registration) for court_code='33~10' from the S3 dataset at 's3://indian-high-court-judgments/...'. Then, plot the results as a scatterplot with a regression line and encode it as a Base64 data URI."
+#            }}
+#          ]
+
+#          Now, deconstruct the user's request according to these strict rules."""),
+#         ("user", "{original_question}")
+#     ])
+    
+#     deconstructor_chain = prompt | llm
+#     result = deconstructor_chain.invoke({"original_question": state['original_question']})
+
+#     json_string = result.content.strip().replace("```json", "").replace("```", "")
+#     sub_tasks = json.loads(json_string)
+
+#     state['sub_tasks'] = sub_tasks
+#     state['completed_tasks'] = {} # Initialize the answer dictionary
+#     return state
+
+
+def question_deconstructor_node(state: AgentState):
+    """
+    The Deconstructor: Analyzes the original question and breaks it down
+    into a structured list of sub-tasks.
+    """
+    print("--- Entering Question Deconstructor Node ---")
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         """You are an expert project manager. Your job is to analyze a user's complex request and break it down into a list of individual, self-contained tasks.
+
+         You must classify each task into one of the following types: `python_analysis`, `web_scraping`(ONLY IF URL IS PRESENT), or `summarization_qa(IF THE QUESTION EXPLICITLY MENTIONS THE WORD LIKE SUMMARIZE)`.
+
+         Your output MUST be a JSON list of dictionaries. Each dictionary must have two keys: "type" and "question".
+
+
+
+
+        --- HIGHEST PRIORITY RULE: URL DETECTION ---
+         1->If the user's request contains a URL for a website, you MUST classify that task as `web_scraping`. Do not choose any other type for tasks involving URLs.
+
+
+
+
+        --- IMPORTANT RULE #1 ---
+         Do not infer or add extra steps like summarization unless the user explicitly asks for it.
+
+         --- IMPORTANT RULE #2 ---
+         IF THERE ARE MULTIPLE QUESTIONS BELONGING TO SAME TYPE OF TASK THEN AGGREGATE THOSE QUESTIONS LIKE 
+            EXAMPLE:{{
+             "type": "python_analysis",
+             "question:"
+                    "q1. How many $2 bn movies were released before 2000?
+                    q2. Which is the earliest film that grossed over $1.5 bn?
+                    q3. What's the correlation between the Rank and Peak?"
+           }}
+
+         --- IMPORTANT RULE #4: SELF-CONTAINED PYTHON TASKS ---
+         If a task requires fetching data from a remote source (like S3) AND performing a Python-specific action (like plotting), classify it as `python_analysis`. The "question" for that step must be a complete, self-contained instruction to BOTH fetch the data AND perform the analysis.
+
+         Example of a single step:
+         User Request: "Process the attached CSV file and return a DataFrame with specific columns and data types."
+         Your Output:
+         [
+           {{
+             "type": "python_analysis",
+             "question": "Process the attached CSV file and return a DataFrame with specific columns and data types."
+           }}
+         ]
+
+         Example of multiple steps with a self-contained Python task:
+         User Request: "Which high court disposed the most cases from 2019-2022? Also, plot the delay by year for court=33_10 from the S3 dataset."
+         Your Output:
+         [
+           {{
+             "type": "python_analysis",
+             "question": "Using the dataset at 's3://indian-high-court-judgments/...', which high court disposed the most cases from 2019 - 2022?"
+           }},
+           {{
+             "type": "python_analysis",
+             "question": "Using DuckDB, first fetch the 'year' and the delay in days (decision_date - date_of_registration) for court_code='33~10' from the S3 dataset at 's3://indian-high-court-judgments/...'. Then, plot the results as a scatterplot with a regression line and encode it as a Base64 data URI."
+           }}
+         ]
+
+         Now, deconstruct the user's request according to these strict rules."""),
+        ("user", "{original_question}")
+    ])
+    
+    deconstructor_chain = prompt | llm
+    result = deconstructor_chain.invoke({"original_question": state['original_question']})
+
+    json_string = result.content.strip().replace("```json", "").replace("```", "")
+    sub_tasks = json.loads(json_string)
+
+    state['sub_tasks'] = sub_tasks
+    state['completed_tasks'] = {} # Initialize the answer dictionary
+    return state
+
+
+def prepare_next_task_node(state: AgentState):
+    """
+    Peeks at the next task and populates the state.
+    Crucially, it passes BOTH the sub-task question and the original full context.
+    """
+    print("--- Entering Task Preparer Node ---")
+    
+    if state['sub_tasks']:
+        next_task = state['sub_tasks'][0]
+        state['current_task'] = next_task
+        # Set the 'question' for the specialist node to use
+        state['question'] = next_task['question']
+        # The 'original_question' containing full context remains untouched for use by workers
+    
+    return state
+
+def route_tasks(state: AgentState):
+    """
+    Checks if there are pending tasks and returns the type of the next task
+    for conditional routing.
+    """
+    if not state['sub_tasks']:
+        return "end_loop"
+
+    next_task_type = state['sub_tasks'][0]['type']
+    print(f"--- Routing to: {next_task_type} ---")
+    return next_task_type
+
+
+def result_aggregator_node(state: AgentState):
+    """
+    Aggregates the result and correctly removes the completed task from the list.
+    """
+    print("--- Entering Result Aggregator Node ---")
+    
+    current_question = state['current_task']['question']
+    result = state.get('execution_result', state.get('execution_error', 'No result produced.'))
+    
+    # Update the dictionary of completed tasks
+    state['completed_tasks'].update({current_question: result})
+    
+    # --- FIX IS HERE: Create a new list instead of modifying in-place ---
+    current_tasks = state['sub_tasks']
+    state['sub_tasks'] = current_tasks[1:] # Assign a new list (a slice of the old one)
+    
+    # Clear state for the next loop
+    state['execution_result'] = ""
+    state['execution_error'] = ""
+    state['plan'] = ""
+    state['revision_number'] = 0
+    return state
 
 
 def data_ingestion_node(state: AgentState):
@@ -329,8 +690,10 @@ def web_scraping_node(state: AgentState):
     print("--- Entering Web Scraping Node ---")
     question_text = state['question']
     
-    url_match = re.search(r'https?://\S+', question_text)
+    url_match = re.search(r'https?://\S*[^\s.,\'")]', question_text)
+    print
     if not url_match:
+        print("------------------------No Url-----------------------------------")
         state['execution_error'] = "No URL found in the question for web scraping."
         state['task_type'] = 'error'
         return state
@@ -417,23 +780,53 @@ def worker_node(state: AgentState):
     """
     Worker Node: Generates analysis code based on the prepared data.
     """
-    data_context_preview = state["dataframe_for_analysis"].head().to_string()
+    if state["dataframe_for_analysis"] is not None and not state["dataframe_for_analysis"].empty :
+        data_context_preview = state["dataframe_for_analysis"].head().to_string()
+    else:
+        data_context_preview=[]
 
     full_data_context = state['data_context']
 
+
     system_prompt = ChatPromptTemplate.from_messages([
         ("system",
-         """You are an expert data analyst Python programmer.
-         A pandas DataFrame named `df` will be created with the user's data.
-         Here is the FULL data to help you understand its content, columns, and types:
-         --- FULL DATA ---
-         {data_context}
+         """You are an expert data analyst Python programmer. Your task is to write a complete, self-contained Python script to answer the user's question.
+            import all the required modules
+
+         You have two ways to get data:
+         1. If a DataFrame preview is provided, a pandas DataFrame named `df` is already loaded. You can use it directly.
+         2. If no DataFrame preview is provided, you MUST write a script that loads its own data. for example like , For querying remote Parquet files on S3, ALWAYS use the `duckdb` library.
+
+         --- EXAMPLE of a self-contained DuckDB script ---
+         import duckdb
+         import pandas as pd
+
+         # Connect and load extensions
+         con = duckdb.connect(database=':memory:')
+         con.execute("INSTALL httpfs; LOAD httpfs;")
+         con.execute("INSTALL parquet; LOAD parquet;")
+
+         # Define the query
+         sql_query = "SELECT * FROM read_parquet('s3://bucket/path/...')"
+         
+         # Execute and get result
+         df_result = con.execute(sql_query).df()
+         con.close()
+         
+         # Perform final calculations
+         # The final answer must be assigned to a variable named 'result'
+         result = df_result['column'].mean() 
          ---
-         Your task is to write ONLY the Python code to perform the analysis on the `df` DataFrame based on the user's question.
-         Your final output MUST be ONLY the raw Python code. Do NOT include markdown or explanations.
-         The final answer of your script MUST be assigned to a variable named `result` .
-         """
-        ),
+
+        ---------VERY IMPORTANT----------
+         Your final output MUST be ONLY the Python code. 
+         DO NOT include markdown or EXPLANATIONS.
+         The final answer of your script MUST be assigned to a variable named `result`.
+         
+         --- DataFrame Preview (if available) ---
+         {data_context}
+         --- Question is -> {user_prompt}---
+         """),
         ("user", "{user_prompt}"),
     ])
     
@@ -540,8 +933,11 @@ def critic_node(state: AgentState):
     Critic Node: Checks for basic Python syntax errors only.
     """
     # Use the DataFrame for the data preview, not the text context
-    data_context_preview = state["dataframe_for_analysis"].head().to_string()
-    
+    if state["dataframe_for_analysis"] is not None and not state["dataframe_for_analysis"].empty :
+        data_context_preview = state["dataframe_for_analysis"].head().to_string()
+    else:
+        data_context_preview=[]
+     
     system_prompt = ChatPromptTemplate.from_messages([
         ("system",
          """You are an expert Python syntax checker. Your ONLY job is to check the provided Python code for syntax errors. Do not check for logical errors.
@@ -571,7 +967,11 @@ def final_boss_node(state: AgentState):
     Final Boss Node: Debugs logical and runtime errors from the execution node.
     """
     # Use the DataFrame for the data preview, not the text context
-    data_context_preview = state["dataframe_for_analysis"].head().to_string()
+    if state["dataframe_for_analysis"] is not None and not state["dataframe_for_analysis"].empty :
+        data_context_preview = state["dataframe_for_analysis"].head().to_string()
+    else:
+        data_context_preview=[]
+
 
     system_prompt = ChatPromptTemplate.from_messages([
         ("system",
@@ -588,11 +988,12 @@ def final_boss_node(state: AgentState):
          --- EXECUTION ERROR ---
          {error}
 
+         --- VERY EXTRA IMPORTANT ---
+         RETURN ONLY THE CORRECT CODE WITH NO MARKUPS NO COMMENTS 
+
          IMPORTANT:
          - Your final output must be ONLY the corrected, raw Python code for the analysis part.
          - Do NOT add any new data loading code (like `pd.read_csv` or `pd.read_html`).
-         - Do NOT include markdown or any explanations.
-         - MUST Fix the Error in the failed code Do not add anything else 
          """
         ),
         
@@ -619,9 +1020,10 @@ def execution_node(state: AgentState):
     try:
         df = state['dataframe_for_analysis']
         if df is None:
-            raise ValueError("No DataFrame found for analysis.")
-        
-        csv_data = df.to_csv(index=False)
+            # raise ValueError("No DataFrame found for analysis.")
+            csv_data = """Dummy CSV"""
+        else:
+            csv_data = df.to_csv(index=False)
         
         # Data Cleaning Step
         # cleaning_prompt = ChatPromptTemplate.from_messages([
@@ -637,6 +1039,7 @@ def execution_node(state: AgentState):
         data_loading_script = f"""
 import pandas as pd
 from io import StringIO
+
 
 df = pd.read_csv(StringIO('''{csv_data}'''))
 
@@ -703,87 +1106,81 @@ def after_execution(state: AgentState):
 # --- Graph Assembly ---
 workflow = StateGraph(AgentState)
 
+# 1. Add all nodes for the Hybrid Agent
+# Management Nodes
+workflow.add_node("deconstructor", question_deconstructor_node)
+workflow.add_node("data_loader", data_ingestion_node)
+workflow.add_node("task_preparer", prepare_next_task_node)
+workflow.add_node("aggregator", result_aggregator_node)
+workflow.add_node("synthesizer", llm_synthesizer_node)
 
-workflow.add_node("data_ingestion", data_ingestion_node)
-workflow.add_node("task_router", task_router_node)
-workflow.add_node("prepare_data", prepare_data_node)
+# Specialist Nodes
+workflow.add_node("sql_worker", sql_worker_node)
+workflow.add_node("sql_executor", sql_executor_node)
+workflow.add_node("web_scraper", web_scraping_node)
 workflow.add_node("worker", worker_node)
 workflow.add_node("critic", critic_node)
-workflow.add_node("executor", execution_node)
-workflow.add_node("final_boss", final_boss_node) # New node
+workflow.add_node("python_executor", execution_node)
+workflow.add_node("final_boss", final_boss_node)
+
+# 2. Define the workflow's entry point and main path
+workflow.set_entry_point("deconstructor")
+workflow.add_edge("deconstructor", "data_loader")
+workflow.add_edge("data_loader", "task_preparer")
 workflow.add_node("summarizer_qa", summarization_qa_node)
-workflow.add_node("script_executor", script_executor_node)
-workflow.add_node("web_scraper", web_scraping_node)
 
 
-
-# workflow.set_entry_point("prepare_data")
-
-# workflow.add_edge("prepare_data", "worker")
-# workflow.add_edge("worker", "critic")
-
-
-workflow.set_entry_point("data_ingestion")
-
-# Define the edges
-workflow.add_edge("data_ingestion", "task_router")
-
-def route_after_router(state: AgentState):
-    if state.get("task_type") == 'error':
-        return "end_error"
-    return state["task_type"]
-
+# 3. The conditional edge uses the 'route_tasks' function to decide where to go
 workflow.add_conditional_edges(
-    "task_router",
-    route_after_router,
+    "task_preparer",
+    route_tasks,
     {
-        "web_scraping": "web_scraper",
+        "sql_query": "sql_worker",
         "python_analysis": "worker",
-        "summarization_qa": "summarizer_qa",
-        "script_execution": "script_executor",
-        "end_error": END
+        "web_scraping": "web_scraper",
+        "end_loop": "synthesizer" ,
+        "summarization_qa": "summarizer_qa"
     }
 )
 
+# 4. Define the paths for each specialist branch
+# SQL Branch
+workflow.add_edge("sql_worker", "sql_executor")
+workflow.add_edge("sql_executor", "aggregator")
 
+# Web Scraping Branch (which then becomes a Python task)
+workflow.add_edge("web_scraper", "worker")
+
+# Python Analysis Branch (with its own internal review loop)
 workflow.add_edge("worker", "critic")
 workflow.add_conditional_edges(
     "critic",
-    should_continue, # Your original edge logic
-    {"execute": "executor", "revise": "worker", "end_failure": END}
+    should_continue,
+    {
+        "execute": "python_executor",
+        "revise": "worker",
+        "end_failure": "aggregator" # If it fails, aggregate the error message
+    }
 )
 workflow.add_conditional_edges(
-    "executor",
-    after_execution, # Your original edge logic
-    {"debug": "final_boss", "end": END}
+    "python_executor",
+    after_execution,
+    {
+        "debug": "final_boss",
+        "end": "aggregator" # On success, aggregate the result
+    }
 )
-workflow.add_edge("final_boss", "executor")
-workflow.add_edge("web_scraper", "worker")
+workflow.add_edge("final_boss", "worker") # The boss sends corrected code back for another try
+
+# 5. After any task is completed, the aggregator loops back to the preparer
+workflow.add_edge("aggregator", "task_preparer")
+
+#Experimental
+workflow.add_edge("summarizer_qa", "aggregator")
 
 
+# 6. The synthesizer is the final step before ending
+workflow.add_edge("synthesizer", END)
 
-
-# # Critic loop (for syntax errors)
-# workflow.add_conditional_edges(
-#     "critic",
-#     should_continue,
-#     {"execute": "executor", "revise": "worker", "end_failure": END}
-# )
-
-# # New Executor loop (for logical/runtime errors)
-# workflow.add_conditional_edges(
-#     "executor",
-#     after_execution,
-#     {"debug": "final_boss", "end": END}
-# )
-
-# # Final Boss loops back to the executor
-# workflow.add_edge("final_boss", "executor")
-
-
-# --- The new branches go directly to the end ---
-workflow.add_edge("summarizer_qa", END)
-workflow.add_edge("script_executor", END)
-
-# Compile the graph and export it
+# Compile the final, correct graph
 app = workflow.compile()

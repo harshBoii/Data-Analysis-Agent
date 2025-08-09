@@ -161,6 +161,7 @@ async def analyze_route(
         print(f"Invoking agent with files: {file_paths}")
         
         initial_state = {
+             "original_question": question_text,
             "question": question_text,
             "file_paths": file_paths,
             "messages": [],             # Start with an empty list of messages
@@ -179,7 +180,7 @@ async def analyze_route(
             final_state = await agent_app.ainvoke(initial_state)
             
             # The final result is now in the 'execution_result' key.
-            output_str = final_state.get("execution_result", "No result found.")
+            output_str = final_state.get("final_answer", "No result found.")
             
             return {"output": output_str}
 

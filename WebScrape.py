@@ -124,7 +124,7 @@ def process_tables_with_custom_logic(soup):
             total_count = len(series)
             # Check if atleast over 10% of the column can be converted to a number
             
-            if total_count > 0 and (numeric_count / total_count) > 0.3:
+            if total_count > 0 and (numeric_count / total_count) > 0.7:
                 # --- NEW LOGIC: Check if the numeric column is fully hyperlinked ---
                 is_fully_linked = False
                 rows = table_soup.find_all('tr')
@@ -213,7 +213,7 @@ def scrape_and_extract(url):
 
     # --- Post-process the extracted tables ---
     cleaned_tables = [df for df in tables]
-    final_tables = [convert_table_types(df) for df in cleaned_tables]
+    final_tables = [(df) for df in cleaned_tables]
 
     return text_content, final_tables
 
