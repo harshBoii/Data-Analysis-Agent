@@ -1,0 +1,1 @@
+The new agent architecture utilizes a router node to dynamically select the appropriate processing branch. This allows the system to handle diverse tasks such as data analysis, document summarization, and direct script execution from a single endpoint. This modularity improves maintainability and scalability.
