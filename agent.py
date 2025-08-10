@@ -1,5 +1,5 @@
 # agent.py
-
+import pathlib
 import os
 import json
 import re
@@ -15,7 +15,7 @@ from langchain.tools import Tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 import io
 from WebScrape import scrape_and_extract
-from tools import smart_data_loader, python_repl_tool, duckdb_query_tool , scrape_web_page
+from tools import smart_data_loader, python_repl_tool, duckdb_query_tool , scrape_web_page, OpenAI_Rag
 from TableSelector import select_best_tables_by_metadata
 from MostAppropriateTableidx import select_best_dataframe
 import duckdb # Make sure duckdb is imported
@@ -301,10 +301,13 @@ def llm_synthesizer_node(state: AgentState):
         ("system",
          """You are an expert report synthesizer. Your job is to take a list of questions and their corresponding raw answers and format them into a clean, final JSON object.
 
-         The final JSON object should map a simplified key (like "q1", "q2") to the answer for each question.
+         The final JSON object should map a simplified key (like `Ans.1's name`, `Ans.2's name`) to the answer for each question.
 
          - Clean up the answers if necessary (e.g., remove unnecessary whitespace or formatting).
          - Ensure your final output is ONLY the raw JSON object, with no surrounding text or markdown.
+
+         --- VERY IMPORTANT --
+            SUMMARISE THE ANSWER OF EACH QUESTION VERY CONCISELY , JUST ENOUGH TO ANSER THE QUESTION
          """),
         ("user",
          """Please synthesize the following results into the final JSON report:
@@ -513,15 +516,30 @@ def result_aggregator_node(state: AgentState):
     """
     print("--- Entering Result Aggregator Node ---")
     
-    current_question = state['current_task']['question']
     result = state.get('execution_result', state.get('execution_error', 'No result produced.'))
     
     # Update the dictionary of completed tasks
-    state['completed_tasks'].update({current_question: result})
-    
-    # --- FIX IS HERE: Create a new list instead of modifying in-place ---
-    current_tasks = state['sub_tasks']
-    state['sub_tasks'] = current_tasks[1:] # Assign a new list (a slice of the old one)
+    if 'current_task' in state and state['current_task']:
+        print("--- Aggregating a multi-step task result ---")
+        current_question = state['current_task']['question']
+        
+        # Add the result to our dictionary of completed tasks
+        state['completed_tasks'].update({current_question: result})
+        
+        # Remove the just-completed task from the sub_tasks list
+        current_tasks = state.get('sub_tasks', [])
+        if current_tasks:
+            state['sub_tasks'] = current_tasks[1:]
+    else:
+        # This is a single-step task (like summarization), not part of a sub-task loop.
+        print("--- Aggregating a single-step task result ---")
+        original_question = state['original_question']
+        
+        # The final answer is the only result we have.
+        state['completed_tasks'] = {original_question: result}
+        
+        # Since it's a single-step task, we signal that the loop is over.
+        state['sub_tasks'] = []
     
     # Clear state for the next loop
     state['execution_result'] = ""
@@ -639,11 +657,11 @@ def task_router_node(state: AgentState):
     question = state['question'].lower() # Use a lowercase version for checks
     
     # --- ADD THIS NEW LOGIC BLOCK ---
-    sql_keywords = ['sql', 'query', 'group by', 'filter where','database']
-    if any(keyword in question for keyword in sql_keywords):
-        print("--- Router classified task as: sql_analysis (Keyword detected) ---")
-        state['task_type'] = 'sql_analysis'
-        return state
+    # sql_keywords = ['sql', 'query', 'group by', 'filter where','database']
+    # if any(keyword in question for keyword in sql_keywords):
+    #     print("--- Router classified task as: sql_analysis (Keyword detected) ---")
+    #     state['task_type'] = 'sql_analysis'
+    #     return state
 
     url_match = re.search(r'https?://\S+', state['question'])
     if url_match:
@@ -653,9 +671,9 @@ def task_router_node(state: AgentState):
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a task routing expert. Based on the user's question and provided file types, classify the task. Your response must be one of the following exact strings:
-        - 'python_analysis': If the user wants to analyze tabular data (CSV/Excel), needs a chart generated, or perform complex calculations.
+        - 'python_analysis': If the user wants to analyze tabular data (CSV/Excel), needs a chart generated, or perform complex calculations or HAS PYTHON CODE.
         - 'summarization_qa': If the user wants a summary or asks a question about the content of text files (PDF/TXT) or images.
-        - 'script_execution': If the user explicitly asks to run an attached Python or SQL script."""),
+        - 'script_execution': If the user explicitly asks to run an attached Python Code"""),
         ("user", "Question: {question}\n\nFile Paths: {file_paths}")
     ])
     
@@ -682,6 +700,24 @@ def task_router_node(state: AgentState):
     return state
 
 # In agent.py, use this as the definitive web_scraping_node
+
+def script_executor_node(state: AgentState):
+    """
+    Executes a user-provided Python script in a sandboxed environment.
+    """
+    script_to_run = state.get('user_script_to_run')
+    if not script_to_run:
+        state['execution_error'] = "Router failed to identify a script to run."
+        return state
+
+    print(f"--- Entering Script Executor Node: Running {script_to_run} ---")
+    
+    # This calls the utility function you already have in your project
+    result = run_user_script_sandboxed(script_to_run)
+    
+    state['execution_result'] = result
+    return state
+
 
 def web_scraping_node(state: AgentState):
     """
@@ -743,38 +779,64 @@ def web_scraping_node(state: AgentState):
         state['task_type'] = 'error'
 
     return state
+# ------------------------------------------------------
+# def summarization_qa_node(state: AgentState):
+#     """Handles summarization and general Q&A over text and images."""
+#     print("--- Entering Summarization/QA Node ---")
+    
+#     user_prompt = state['question']
+    
+#     message_content = [{"type": "text", "text": f"Context from files:\n{state['data_context']}\n\nQuestion:\n{user_prompt}"}]
+    
+#     for b64_image in state['image_b64_data']:
+#         message_content.append({
+#             "type": "image_url",
+#             "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}
+#         })
+
+#     prompt = ChatPromptTemplate.from_messages([
+#         ("system", "You are a helpful assistant. Answer the user's question based on the provided text context and images."),
+#         ("user", message_content), 
+#     ])
+    
+#     chain = prompt | llm
+#     result = chain.invoke({})
+    
+#     state['execution_result'] = result.content
+#     return state
+
+# ---------------------------------------------------------------
 
 def summarization_qa_node(state: AgentState):
-    """Handles summarization and general Q&A over text and images."""
+
     print("--- Entering Summarization/QA Node ---")
-    
-    user_prompt = state['question']
-    
-    message_content = [{"type": "text", "text": f"Context from files:\n{state['data_context']}\n\nQuestion:\n{user_prompt}"}]
-    
-    for b64_image in state['image_b64_data']:
-        message_content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}
-        })
+    Raw_data=pathlib.Path(state["file_paths"][1]).read_text()
+    documents = Raw_data.strip().split('\n\n')
+    print(f"Split context into {len(documents)} chunks.")
+
+
+    Rag=OpenAI_Rag()
+    Rag.build_index(documents)
+    Context=Rag.get_answer(state['question'])
+
+    print(f"Found context: {Context}")
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a helpful assistant. Answer the user's question based on the provided text context and images."),
-        ("user", message_content), 
+        ("system", "You are a helpful assistant. Answer the user's question based on the provided text context and images(if provided or attatched)."),
+        "user", "Question: {question}\n\nContext:\n{context}", 
     ])
     
     chain = prompt | llm
-    result = chain.invoke({})
+    result = chain.invoke({
+    "question": state['question'],
+    "context": Context
+    })
     
     state['execution_result'] = result.content
     return state
 
-def script_executor_node(state: AgentState):
-    """Executes the user-provided script."""
-    print(f"--- Executing user script: {state['user_script_to_run']} ---")
-    result = run_user_script_sandboxed(state['user_script_to_run'])
-    state['execution_result'] = result
-    return state
+
+
 
 def worker_node(state: AgentState):
     """
@@ -1108,26 +1170,52 @@ workflow = StateGraph(AgentState)
 
 # 1. Add all nodes for the Hybrid Agent
 # Management Nodes
-workflow.add_node("deconstructor", question_deconstructor_node)
 workflow.add_node("data_loader", data_ingestion_node)
+workflow.add_node("task_router", task_router_node) # Your smart dispatcher
+workflow.add_node("deconstructor", question_deconstructor_node) # Now a specialist
 workflow.add_node("task_preparer", prepare_next_task_node)
 workflow.add_node("aggregator", result_aggregator_node)
 workflow.add_node("synthesizer", llm_synthesizer_node)
 
 # Specialist Nodes
+workflow.add_node("summarizer_qa", summarization_qa_node)
+workflow.add_node("web_scraper", web_scraping_node)
 workflow.add_node("sql_worker", sql_worker_node)
 workflow.add_node("sql_executor", sql_executor_node)
-workflow.add_node("web_scraper", web_scraping_node)
 workflow.add_node("worker", worker_node)
 workflow.add_node("critic", critic_node)
 workflow.add_node("python_executor", execution_node)
 workflow.add_node("final_boss", final_boss_node)
+workflow.add_node("script_executor", script_executor_node) # ADDED: New node
 
-# 2. Define the workflow's entry point and main path
-workflow.set_entry_point("deconstructor")
-workflow.add_edge("deconstructor", "data_loader")
-workflow.add_edge("data_loader", "task_preparer")
-workflow.add_node("summarizer_qa", summarization_qa_node)
+
+
+workflow.set_entry_point("data_loader")
+
+workflow.add_edge("data_loader", "task_router")
+
+
+workflow.add_conditional_edges(
+    "task_router",
+    lambda state: state.get("task_type", "error"),
+    {
+        # Simple, one-step tasks go directly to their specialist node
+        "summarization_qa": "summarizer_qa",
+        "web_scraping": "web_scraper",
+
+        # Complex, multi-step tasks are sent to the deconstructor first
+        "python_analysis": "deconstructor",
+        "sql_query": "deconstructor",
+
+        "script_execution": "script_executor",
+        # If something goes wrong with routing
+        "error": END
+    }
+)
+
+workflow.add_edge("script_executor", "aggregator") 
+
+workflow.add_edge("deconstructor", "task_preparer")
 
 
 # 3. The conditional edge uses the 'route_tasks' function to decide where to go
@@ -1142,6 +1230,11 @@ workflow.add_conditional_edges(
         "summarization_qa": "summarizer_qa"
     }
 )
+
+# Simple QA and Web Scraping branches
+workflow.add_edge("summarizer_qa", "aggregator")
+workflow.add_edge("web_scraper", "worker") # Web scraping is followed by Python analysis
+
 
 # 4. Define the paths for each specialist branch
 # SQL Branch
@@ -1174,10 +1267,6 @@ workflow.add_edge("final_boss", "worker") # The boss sends corrected code back f
 
 # 5. After any task is completed, the aggregator loops back to the preparer
 workflow.add_edge("aggregator", "task_preparer")
-
-#Experimental
-workflow.add_edge("summarizer_qa", "aggregator")
-
 
 # 6. The synthesizer is the final step before ending
 workflow.add_edge("synthesizer", END)

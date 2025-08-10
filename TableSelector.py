@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 from sklearn.metrics.pairwise import cosine_similarity
 from openai import OpenAI
 import numpy as np 
+from typing import List
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -95,6 +96,47 @@ def select_best_tables_by_metadata(question: str,
                                   openai_api_key: str = key,
                                   embedding_model: str = "text-embedding-3-small"
                                  ) -> tuple[int, float, list[int]]:
+    """
+    Ranks a list of DataFrames by cosine similarity against a question
+    and returns the top results.
+    """
+    client = OpenAI(api_key=openai_api_key)
+    
+    # 1) Generate metadata for each provided table
+    metas = []
+    for df in tables:
+        # We can't get title/caption anymore, so we use columns, which is most important
+        cols = df.columns.tolist()
+        metas.append(f"Columns: {cols}")
+
+    # 2) embed the question
+    q_resp = client.embeddings.create(model=embedding_model, input=[question])
+    q_emb = q_resp.data[0].embedding
+
+    # 3) embed each table’s metadata
+    tbl_resp = client.embeddings.create(model=embedding_model, input=metas)
+    tbl_embs = [item.embedding for item in tbl_resp.data]
+
+    # 4) compute cosine similarities
+    sims = cosine_similarity([q_emb], tbl_embs)[0]
+
+    # 5) get top 4 indices
+    num_results = min(4, len(tables))
+    top_indices = np.argsort(sims)[-num_results:][::-1].tolist()
+
+    # 6) get best overall index and score
+    best_idx = int(sims.argmax())
+    best_score = float(sims[best_idx])
+
+    return best_idx, best_score, top_indices
+
+
+
+def rag_Company(question: str,
+                tables: list[pd.DataFrame],  # <<< CHANGE: Takes a list of tables
+                openai_api_key: str = key,
+                embedding_model: str = "text-embedding-3-small"
+                ) -> tuple[int, float, list[int]]:
     """
     Ranks a list of DataFrames by cosine similarity against a question
     and returns the top results.

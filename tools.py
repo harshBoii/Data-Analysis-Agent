@@ -22,10 +22,80 @@ from PyPDF2 import PdfReader
 import base64
 import subprocess
 import os
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+from sklearn.metrics.pairwise import cosine_similarity
+from openai import OpenAI
+import numpy as np 
+from typing import List
+
+from dotenv import load_dotenv
+load_dotenv()
+
+key=os.getenv("OPENAI_API_KEY")
+
 
 
 
 # Instantiate the tool for agent use
+
+
+
+
+
+class OpenAI_Rag:
+    """
+    A Retrieval-based QA system using OpenAI embeddings without a generative chat model.
+    """
+    def __init__(self, api_key: str=key):
+        """
+        Initializes the OpenAI client.
+        """
+        self.client = OpenAI(api_key=api_key)
+        self.documents = []
+        self.embeddings = None
+        print("OpenAI client initialized.")
+
+    def build_index(self, documents: List[str], model: str = "text-embedding-3-small"):
+        """
+        Creates vector embeddings for a list of documents using OpenAI's API.
+        
+        Args:
+            documents: A list of strings, where each string is a chunk of text.
+            model: The embedding model to use.
+        """
+        self.documents = documents
+        print(f"Building index for {len(documents)} documents using '{model}'...")
+        
+        # 1. Call the OpenAI Embeddings API
+        response = self.client.embeddings.create(input=documents, model=model)
+        
+        # 2. Extract the embeddings and store them as a NumPy array
+        self.embeddings = np.array([item.embedding for item in response.data])
+        print("Index built successfully.")
+
+    def get_answer(self, question: str, model: str = "text-embedding-3-small") -> str:
+        """
+        Finds and returns the most relevant document chunk for a given question.
+        """
+        if self.embeddings is None:
+            return "Please build the index first by calling the .build_index() method."
+
+        # 1. Embed the user's question
+        response = self.client.embeddings.create(input=[question], model=model)
+        question_embedding = np.array([response.data[0].embedding])
+
+        # 2. Calculate cosine similarity between the question and all documents
+        # The result is a 2D array, so we take the first (and only) row
+        sims = cosine_similarity(question_embedding, self.embeddings)[0]
+
+        # 3. Find the index of the most similar document
+        most_similar_idx = np.argmax(sims)
+
+        # 4. Return the original text of the most relevant document
+        return self.documents[most_similar_idx]
+
 
 
 class DuckDbQueryInput(BaseModel):
