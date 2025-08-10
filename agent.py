@@ -19,6 +19,8 @@ from tools import smart_data_loader, python_repl_tool, duckdb_query_tool , scrap
 from TableSelector import select_best_tables_by_metadata
 from MostAppropriateTableidx import select_best_dataframe
 import duckdb # Make sure duckdb is imported
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 
 from utils import (
     load_csv_or_excel,
@@ -673,7 +675,8 @@ def task_router_node(state: AgentState):
         ("system", """You are a task routing expert. Based on the user's question and provided file types, classify the task. Your response must be one of the following exact strings:
         - 'python_analysis': If the user wants to analyze tabular data (CSV/Excel), needs a chart generated, or perform complex calculations or HAS PYTHON CODE.
         - 'summarization_qa': If the user wants a summary or asks a question about the content of text files (PDF/TXT) or images.
-        - 'script_execution': If the user explicitly asks to run an attached Python Code"""),
+        - 'script_execution': If the user explicitly asks to run an attached Python Code
+        - 'presonalized_summary':If the user wants a summary or asks a question WHICH INCLUDES WORD `Smriti` '"""),
         ("user", "Question: {question}\n\nFile Paths: {file_paths}")
     ])
     
@@ -806,6 +809,43 @@ def web_scraping_node(state: AgentState):
 #     return state
 
 # ---------------------------------------------------------------
+
+def presonalized_summary_node(state:AgentState):
+    print("--- Entering presonalized_summary Node ---")
+    Raw_data=pathlib.Path('/Users/mac/Desktop/Project 2 TDS/Smriti.txt').read_text()
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,  # The size of each chunk in characters
+        chunk_overlap=50   # Overlap helps keep context between chunks
+    )
+
+    # This creates smaller, more focused documents
+    documents = text_splitter.split_text(Raw_data)
+    print(f"Split context into {len(documents)} chunks.")
+
+
+    Rag=OpenAI_Rag()
+    Rag.build_index(documents)
+    Context=Rag.get_answer(state['question'])
+
+    print(f"Found context: {Context}")
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful assistant. Answer the user's question based on the provided text context and images(if provided or attatched)."),
+        "user", "Question: {question}\n\nContext:\n{context}", 
+    ])
+    
+    chain = prompt | llm
+    result = chain.invoke({
+    "question": state['question'],
+    "context": Context
+    })
+    
+    state['execution_result'] = result.content
+    return state
+
+
+
+
 
 def summarization_qa_node(state: AgentState):
 
@@ -1187,6 +1227,7 @@ workflow.add_node("critic", critic_node)
 workflow.add_node("python_executor", execution_node)
 workflow.add_node("final_boss", final_boss_node)
 workflow.add_node("script_executor", script_executor_node) # ADDED: New node
+workflow.add_node("presonalized_summary",presonalized_summary_node)
 
 
 
@@ -1202,6 +1243,7 @@ workflow.add_conditional_edges(
         # Simple, one-step tasks go directly to their specialist node
         "summarization_qa": "summarizer_qa",
         "web_scraping": "web_scraper",
+        "presonalized_summary":"presonalized_summary",
 
         # Complex, multi-step tasks are sent to the deconstructor first
         "python_analysis": "deconstructor",
@@ -1227,12 +1269,14 @@ workflow.add_conditional_edges(
         "python_analysis": "worker",
         "web_scraping": "web_scraper",
         "end_loop": "synthesizer" ,
-        "summarization_qa": "summarizer_qa"
+        "summarization_qa": "summarizer_qa",
+        "presonalized_summary":"presonalized_summary"
     }
 )
 
 # Simple QA and Web Scraping branches
 workflow.add_edge("summarizer_qa", "aggregator")
+workflow.add_edge("presonalized_summary", "aggregator")
 workflow.add_edge("web_scraper", "worker") # Web scraping is followed by Python analysis
 
 
