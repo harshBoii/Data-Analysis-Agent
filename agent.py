@@ -812,7 +812,7 @@ def web_scraping_node(state: AgentState):
 
 def presonalized_summary_node(state:AgentState):
     print("--- Entering presonalized_summary Node ---")
-    Raw_data=pathlib.Path('/Users/mac/Desktop/Project 2 TDS/Smriti.txt').read_text()
+    Raw_data=pathlib.Path('Smriti.txt').read_text()
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,  # The size of each chunk in characters
         chunk_overlap=50   # Overlap helps keep context between chunks
@@ -850,14 +850,16 @@ def presonalized_summary_node(state:AgentState):
 def summarization_qa_node(state: AgentState):
 
     print("--- Entering Summarization/QA Node ---")
-    Raw_data=pathlib.Path(state["file_paths"][1]).read_text()
-    documents = Raw_data.strip().split('\n\n')
-    print(f"Split context into {len(documents)} chunks.")
+    if len(state["file_paths"])>0:
+        Raw_data=None
+        Context="Use Google"
+    else:
+        Raw_data=pathlib.Path(state["file_paths"][0]).read_text()
+        documents = Raw_data.strip().split('\n\n')
+        Rag=OpenAI_Rag()
+        Rag.build_index(documents)
+        Context=Rag.get_answer(state['question'])
 
-
-    Rag=OpenAI_Rag()
-    Rag.build_index(documents)
-    Context=Rag.get_answer(state['question'])
 
     print(f"Found context: {Context}")
 
