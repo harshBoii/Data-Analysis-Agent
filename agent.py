@@ -872,7 +872,7 @@ def presonalized_summary_node(state:AgentState):
 def summarization_qa_node(state: AgentState):
 
     print("--- Entering Summarization/QA Node ---")
-    if len(state["file_paths"])>0:
+    if len(state["file_paths"])<0:
         Raw_data=None
         Context="Use Google"
     else:
