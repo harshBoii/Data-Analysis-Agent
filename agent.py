@@ -20,6 +20,7 @@ from TableSelector import select_best_tables_by_metadata
 from MostAppropriateTableidx import select_best_dataframe
 import duckdb # Make sure duckdb is imported
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+import base64
 
 
 from utils import (
@@ -191,6 +192,17 @@ class AgentState(TypedDict):
         
 #     return state
 
+def is_base64_data_url(text):
+    # Regex to detect base64 data URLs
+    pattern = r"^data:([a-zA-Z0-9]+/[a-zA-Z0-9\-\+\.]+)?;base64,[A-Za-z0-9+/=]+$"
+    if re.match(pattern, text.strip()):
+        try:
+            base64_part = text.split(",", 1)[1]
+            base64.b64decode(base64_part, validate=True)
+            return True
+        except Exception:
+            return False
+    return False
 
 
 def sql_worker_node(state: AgentState):
@@ -290,6 +302,9 @@ def llm_synthesizer_node(state: AgentState):
     {q1: ans1, q2: ans2, ...} JSON object.
     """
     print("--- Entering LLM Synthesizer Node ---")
+
+
+
     
     # Prepare the context for the LLM
     completed_tasks = state.get('completed_tasks', {})
@@ -298,12 +313,19 @@ def llm_synthesizer_node(state: AgentState):
     results_summary = ""
     for question, answer in completed_tasks.items():
         results_summary += f"Question: {question}\nAnswer: {answer}\n---\n"
+    
+    if len(results_summary)>10000:
+        print("-----Aadhe Raaste--------------")
+        return {"final_answer": results_summary}
 
+    print("------Getting To The Prompt Part----------------")
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          """You are an expert report synthesizer. Your job is to take a list of questions and their corresponding raw answers and format them into a clean, final JSON object.
 
-         The final JSON object should map a simplified key (like `Ans.1's name`, `Ans.2's name`) to the answer for each question.
+         ---------------VERY IMPORTANT---------------------
+
+         The final JSON object should map a simplified key (like `Index . question: answer`") 
 
          - Clean up the answers if necessary (e.g., remove unnecessary whitespace or formatting).
          - Ensure your final output is ONLY the raw JSON object, with no surrounding text or markdown.
@@ -1143,6 +1165,8 @@ def execution_node(state: AgentState):
         data_loading_script = f"""
 import pandas as pd
 from io import StringIO
+import matplotlib
+matplotlib.use('Agg')
 
 
 df = pd.read_csv(StringIO('''{csv_data}'''))
