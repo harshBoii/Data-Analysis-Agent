@@ -16,6 +16,15 @@ import shutil
 from agent import app as agent_app
 import os
 from fastapi.middleware.cors import CORSMiddleware
+import shutil
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from typing import List, Optional
+import tempfile
+import os
+import shutil
+import re
+
+
 
 
 
@@ -114,14 +123,12 @@ app.add_middleware(
 #         return {"error": f"An error occurred during agent execution: {str(e)}"}
 
 
-
-# ----WORKING ENDPOINT-----
-
+# # ============================================================================================
 
 # @app.post("/api")
 # async def analyze_route(
 #     question_file: UploadFile = File(...),
-#     attachment: Optional[List[UploadFile]] = File(None)
+#     attachment: Optional[UploadFile] = File(None)
 # ):
     
     
@@ -195,48 +202,57 @@ app.add_middleware(
 #             print(traceback.format_exc())
 #             return {"error": f"An error occurred during agent execution: {str(e)}"}
 
-# --------------------------------------------------------------
+# # ============================================================================================
+
 
 
 @app.post("/api")
 async def analyze_route(
-    question_file: UploadFile = File(...),
-    attachment: Optional[List[UploadFile]] = File(None)
+    # This single parameter captures ALL files sent in the request into a list.
+    # It makes the endpoint flexible to any number and any names of files.
+    files: List[UploadFile] = File(...)
 ):
     """
-    This endpoint handles file uploads for the agent.
+    This endpoint handles any file uploads for the agent.
     It saves the files, gets their paths, and invokes the agent workflow.
     """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files were uploaded.")
+
+    # Create a secure, temporary directory that will be automatically cleaned up
     with tempfile.TemporaryDirectory() as temp_dir:
         
-        # 1. Save all uploaded files
+        # --- 1. Save all uploaded files and collect their paths ---
         file_paths = []
-        all_files = [question_file]
-
-        if attachment:
-            all_files.extend(attachment)   # ✅ fix: flatten list
-
-        for up_file in all_files:
+        for up_file in files:
+            # Create the full path for the file inside the temporary directory
             temp_file_path = os.path.join(temp_dir, up_file.filename)
+            
+            # Save the file to that path
             with open(temp_file_path, "wb") as buffer:
                 shutil.copyfileobj(up_file.file, buffer)
+            
+            # Add the server-side path to our list
             file_paths.append(temp_file_path)
             print(f"Saved file to temporary path: {temp_file_path}")
 
-        # 2. Locate the question file
+        # --- 2. Read the question from the saved question.txt file ---
         question_path = next(
             (p for p in file_paths if re.search(r'question', p, re.IGNORECASE)),
             None
         )
         if not question_path:
-            return {"error": "A file containing 'question' in its name is required."}
+            raise HTTPException(status_code=400, detail="A file containing 'question' in its name is required.")
         
         with open(question_path, "r") as f:
             question_text = f.read()
 
-        # 3. Build agent state
+        # --- 3. Invoke the agent with the correct initial state ---
+        # THIS SECTION IS UNCHANGED, AS REQUESTED
+        print(f"Invoking agent with files: {file_paths}")
+        
         initial_state = {
-            "original_question": question_text,
+             "original_question": question_text,
             "question": question_text,
             "file_paths": file_paths,
             "messages": [],
@@ -251,10 +267,13 @@ async def analyze_route(
         }
         
         try:
+            # THIS SECTION IS UNCHANGED, AS REQUESTED
             final_state = await agent_app.ainvoke(initial_state)
             output_str = final_state.get("final_answer", "No result found.")
             return {"output": output_str}
+
         except Exception as e:
+            # THIS SECTION IS UNCHANGED, AS REQUESTED
             import traceback
             print(traceback.format_exc())
             return {"error": f"An error occurred during agent execution: {str(e)}"}
