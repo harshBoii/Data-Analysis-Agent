@@ -130,7 +130,7 @@ async def process_request(request: Request):
         return {"status": "Request body logged successfully.", "received_data": body}
     except json.JSONDecodeError:
         print("--- ERROR: Client sent non-JSON data ---")
-        return {"error": "Request body is not valid JSON."}
+        return {"error": "Request body is not valid JSON." ,"received_data": body}
 
 # -----------Our Gem----------
 
