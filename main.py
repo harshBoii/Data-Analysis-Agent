@@ -3,7 +3,7 @@
 # logging.basicConfig(level=logging.DEBUG)
 # logging.getLogger("langchain").setLevel(logging.DEBUG)
 # logging.getLogger("langgraph").setLevel(logging.DEBUG)
-
+from typing import List
 from fastapi import Body ,Request
 import json
 import re
@@ -114,41 +114,116 @@ app.add_middleware(
 #         return {"error": f"An error occurred during agent execution: {str(e)}"}
 
 
+
+# ----WORKING ENDPOINT-----
+
+
+# @app.post("/api")
+# async def analyze_route(
+#     question_file: UploadFile = File(...),
+#     attachment: Optional[List[UploadFile]] = File(None)
+# ):
+    
+    
+#     """
+#     This endpoint handles file uploads for the agent.
+#     It saves the files, gets their paths, and invokes the agent workflow.
+#     """
+#     # Create a secure, temporary directory that will be automatically cleaned up
+#     with tempfile.TemporaryDirectory() as temp_dir:
+        
+#         # --- 1. Save all uploaded files and collect their paths ---
+#         file_paths = []
+        
+#         # A list of all files uploaded in the request
+#         all_files = [question_file]
+#         if attachment:
+#             all_files.append(attachment)
+
+#         for up_file in all_files:
+#             # Create the full path for the file inside the temporary directory
+#             temp_file_path = os.path.join(temp_dir, up_file.filename)
+            
+#             # Save the file to that path
+#             with open(temp_file_path, "wb") as buffer:
+#                 shutil.copyfileobj(up_file.file, buffer)
+            
+#             # Add the server-side path to our list
+#             file_paths.append(temp_file_path)
+#             print(f"Saved file to temporary path: {temp_file_path}")
+
+#         # --- 2. Read the question from the saved question.txt file ---
+#         question_path = next(
+#             (p for p in file_paths if re.search(r'question', p, re.IGNORECASE)),
+#             None
+#         )
+#         if not question_path:
+#             return {"error": "A file containing 'question' in its name is required."}
+        
+#         with open(question_path, "r") as f:
+#             question_text = f.read()
+
+#         # --- 3. Invoke the agent with the correct initial state ---
+#         print(f"Invoking agent with files: {file_paths}")
+        
+#         initial_state = {
+#              "original_question": question_text,
+#             "question": question_text,
+#             "file_paths": file_paths,
+#             "messages": [],             # Start with an empty list of messages
+#             "revision_number": 0,       # Initialize the revision number to 0
+#             "plan": "",
+#             "critic_feedback": "",
+#             "execution_result": "",
+#             "execution_error": "",
+#             "user_script_to_run": "",
+#             "image_b64_data": [],
+#             "dataframe_for_analysis": None,
+#         }
+        
+#         try:
+#             # We call our imported workflow with the correct state.
+#             final_state = await agent_app.ainvoke(initial_state)
+            
+#             # The final result is now in the 'execution_result' key.
+#             output_str = final_state.get("final_answer", "No result found.")
+            
+#             return {"output": output_str}
+
+#         except Exception as e:
+#             import traceback
+#             print(traceback.format_exc())
+#             return {"error": f"An error occurred during agent execution: {str(e)}"}
+
+# --------------------------------------------------------------
+
+
 @app.post("/api")
 async def analyze_route(
     question_file: UploadFile = File(...),
-    attachment: Optional[UploadFile] = File(None)
+    attachment: Optional[List[UploadFile]] = File(None)
 ):
-    
-    
     """
     This endpoint handles file uploads for the agent.
     It saves the files, gets their paths, and invokes the agent workflow.
     """
-    # Create a secure, temporary directory that will be automatically cleaned up
     with tempfile.TemporaryDirectory() as temp_dir:
         
-        # --- 1. Save all uploaded files and collect their paths ---
+        # 1. Save all uploaded files
         file_paths = []
-        
-        # A list of all files uploaded in the request
         all_files = [question_file]
+
         if attachment:
-            all_files.append(attachment)
+            all_files.extend(attachment)   # ✅ fix: flatten list
 
         for up_file in all_files:
-            # Create the full path for the file inside the temporary directory
             temp_file_path = os.path.join(temp_dir, up_file.filename)
-            
-            # Save the file to that path
             with open(temp_file_path, "wb") as buffer:
                 shutil.copyfileobj(up_file.file, buffer)
-            
-            # Add the server-side path to our list
             file_paths.append(temp_file_path)
             print(f"Saved file to temporary path: {temp_file_path}")
 
-        # --- 2. Read the question from the saved question.txt file ---
+        # 2. Locate the question file
         question_path = next(
             (p for p in file_paths if re.search(r'question', p, re.IGNORECASE)),
             None
@@ -159,15 +234,13 @@ async def analyze_route(
         with open(question_path, "r") as f:
             question_text = f.read()
 
-        # --- 3. Invoke the agent with the correct initial state ---
-        print(f"Invoking agent with files: {file_paths}")
-        
+        # 3. Build agent state
         initial_state = {
-             "original_question": question_text,
+            "original_question": question_text,
             "question": question_text,
             "file_paths": file_paths,
-            "messages": [],             # Start with an empty list of messages
-            "revision_number": 0,       # Initialize the revision number to 0
+            "messages": [],
+            "revision_number": 0,
             "plan": "",
             "critic_feedback": "",
             "execution_result": "",
@@ -178,16 +251,10 @@ async def analyze_route(
         }
         
         try:
-            # We call our imported workflow with the correct state.
             final_state = await agent_app.ainvoke(initial_state)
-            
-            # The final result is now in the 'execution_result' key.
             output_str = final_state.get("final_answer", "No result found.")
-            
             return {"output": output_str}
-
         except Exception as e:
             import traceback
             print(traceback.format_exc())
             return {"error": f"An error occurred during agent execution: {str(e)}"}
-
