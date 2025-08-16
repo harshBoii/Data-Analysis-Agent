@@ -116,7 +116,7 @@ app.add_middleware(
 
 @app.post("/api")
 async def analyze_route(
-    question_file: str = Form(...),
+    question_file: UploadFile = File(...),
     attachment: Optional[UploadFile] = File(None)
 ):
     
