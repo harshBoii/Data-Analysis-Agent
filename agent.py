@@ -22,6 +22,7 @@ import duckdb # Make sure duckdb is imported
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import base64
 from installer import install_dependencies
+from generate_install import generate_install_script
 
 
 from utils import (
@@ -1170,7 +1171,9 @@ def execution_node(state: AgentState):
 print(result)
         """
         # Combine and execute
+
         analysis_code = state["plan"].strip().replace("```python", "").replace("```", "").strip()
+        install_script = generate_install_script(analysis_code)
         data_loading_script = f"""
 import pandas as pd
 from io import StringIO
@@ -1179,14 +1182,11 @@ matplotlib.use('Agg')
 import networkx
 import seaborn as sns
 
-{install_dependencies(analysis_code)}
-
-
 df = pd.read_csv(StringIO('''{csv_data}'''))
 
 """
 
-        full_script = data_loading_script + "\n" + analysis_code + "\n" + data_printing_scrupt
+        full_script = install_script + "\n" + data_loading_script + "\n" + analysis_code + "\n" + data_printing_scrupt
         print(f"--- EXECUTING SCRIPT ---\n{full_script}\n--------------------")
         print(f"Full script is === {full_script}")
         result = python_repl_tool.invoke(full_script)
