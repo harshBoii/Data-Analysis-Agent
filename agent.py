@@ -316,7 +316,7 @@ def llm_synthesizer_node(state: AgentState):
         results_summary += f"Question: {question}\nAnswer: {answer}\n---\n"
         awi=answer
     
-    if len(results_summary)>10000:
+    if len(results_summary)>6000:
         print("-----Aadhe Raaste--------------")
         return {"final_answer": awi}
 
