@@ -47,9 +47,6 @@ def generate_install_script(code_string: str) -> str:
 import sys
 import subprocess
 
-# --- THIS IS THE FIX ---
-# The outer f-string now uses double quotes to avoid conflicting
-# with the single quotes from the list representation.
 print(f"Installing dependencies: {list(packages_to_install)}...")
 
 try:
@@ -57,6 +54,5 @@ try:
     subprocess.check_call(command)
     print("Installation successful.")
 except Exception as e:
-    # Use double braces '{{e}}' to escape the f-string formatting here
     print(f"Error installing packages: {{e}}")
 """
