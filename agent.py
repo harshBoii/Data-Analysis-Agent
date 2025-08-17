@@ -21,6 +21,7 @@ from MostAppropriateTableidx import select_best_dataframe
 import duckdb # Make sure duckdb is imported
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import base64
+from installer import install_dependencies
 
 
 from utils import (
@@ -308,15 +309,16 @@ def llm_synthesizer_node(state: AgentState):
     
     # Prepare the context for the LLM
     completed_tasks = state.get('completed_tasks', {})
-    
+
     # Create a simple, readable string of the results for the prompt
     results_summary = ""
     for question, answer in completed_tasks.items():
         results_summary += f"Question: {question}\nAnswer: {answer}\n---\n"
+        awi=answer
     
     if len(results_summary)>10000:
         print("-----Aadhe Raaste--------------")
-        return {"final_answer": results_summary}
+        return {"final_answer": awi}
 
     print("------Getting To The Prompt Part----------------")
     prompt = ChatPromptTemplate.from_messages([
@@ -917,7 +919,8 @@ def worker_node(state: AgentState):
     system_prompt = ChatPromptTemplate.from_messages([
         ("system",
          """You are an expert data analyst Python programmer. Your task is to write a complete, self-contained Python script to answer the user's question.
-            import all the required modules
+            
+            IMPORT ALL USED MODULES
 
          You have two ways to get data:
          1. If a DataFrame preview is provided, a pandas DataFrame named `df` is already loaded. You can use it directly.
@@ -947,7 +950,7 @@ def worker_node(state: AgentState):
         ---------VERY IMPORTANT----------
          Your final output MUST be ONLY the Python code. 
          DO NOT include markdown or EXPLANATIONS.
-         The final answer of your script MUST be assigned to a variable named `result`.
+         The final answer of your script MUST be assigned to a class DICT variable named `result `.
          
          --- DataFrame Preview (if available) ---
          {data_context}
@@ -1162,28 +1165,34 @@ def execution_node(state: AgentState):
         # cleaned_data = re.sub(r"```[a-zA-Z]*\n", "", data_context).replace("```", "").strip()
 
         # Data Loading Script Creation
-        data_loading_script = f"""
-import pandas as pd
-from io import StringIO
-import matplotlib
-matplotlib.use('Agg')
-
-
-df = pd.read_csv(StringIO('''{csv_data}'''))
-
-"""
         data_printing_scrupt= f"""
 print(result)
         """
         # Combine and execute
         analysis_code = state["plan"].strip().replace("```python", "").replace("```", "").strip()
+        data_loading_script = f"""
+import pandas as pd
+from io import StringIO
+import matplotlib
+matplotlib.use('Agg')
+import networkx
+import seaborn as sns
+
+{install_dependencies(analysis_code)}
+
+
+df = pd.read_csv(StringIO('''{csv_data}'''))
+
+"""
+
         full_script = data_loading_script + "\n" + analysis_code + "\n" + data_printing_scrupt
         print(f"--- EXECUTING SCRIPT ---\n{full_script}\n--------------------")
         print(f"Full script is === {full_script}")
         result = python_repl_tool.invoke(full_script)
 
+
         # --- FIX: Check the result string for error indicators ---
-        result_str = str(result)
+        result_str = result
         error_indicators = ["Error", "Exception", "Traceback", "ModuleNotFoundError", "KeyError", "SyntaxError", "ParserError"]
         
         is_error = False

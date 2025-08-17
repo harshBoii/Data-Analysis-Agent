@@ -14,6 +14,7 @@ from langchain_core.messages import HumanMessage
 import tempfile
 import shutil
 from agent import app as agent_app
+import ast
 import os
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
@@ -207,52 +208,66 @@ app.add_middleware(
 
 
 @app.post("/api")
-async def analyze_route(
-    # This single parameter captures ALL files sent in the request into a list.
-    # It makes the endpoint flexible to any number and any names of files.
-    files: List[UploadFile] = File(...)
-):
+async def analyze_route(request: Request):
+    print("New Version")
     """
-    This endpoint handles any file uploads for the agent.
-    It saves the files, gets their paths, and invokes the agent workflow.
+    This endpoint is designed to handle the specific multipart request format
+    sent by the unchangeable run.py script.
     """
-    if not files:
-        raise HTTPException(status_code=400, detail="No files were uploaded.")
 
-    # Create a secure, temporary directory that will be automatically cleaned up
+    # 1. Parse the form data
+    form_data = await request.form()
+
+    question_file = form_data.get("questions.txt")
+    attachment_file = next((v for k, v in form_data.items() if k != "questions.txt"), None)
+
+    # 2. Detect files flexibly
+    for field_name, uploaded_item in form_data.items():
+        if isinstance(uploaded_item, UploadFile):
+            fname = uploaded_item.filename.lower()
+            field = field_name.lower()
+
+            # Pick question file if "question" appears in filename or field name
+            if "question" in fname or "question" in field:
+                question_file = uploaded_item
+            else:
+                # Everything else is treated as attachment (first one wins)
+                if not attachment_file:
+                    attachment_file = uploaded_item
+
+    # 3. Validate
+    if not question_file:
+        raise HTTPException(
+            status_code=422,
+            detail="No file with 'question' in its name/field was found."
+        )
+    if not attachment_file:
+        raise HTTPException(
+            status_code=422,
+            detail="No data attachment file was found."
+        )
+
+    # 4. Save files to a secure temp dir
     with tempfile.TemporaryDirectory() as temp_dir:
-        
-        # --- 1. Save all uploaded files and collect their paths ---
         file_paths = []
-        for up_file in files:
-            # Create the full path for the file inside the temporary directory
+        for up_file in [question_file, attachment_file]:
             temp_file_path = os.path.join(temp_dir, up_file.filename)
-            
-            # Save the file to that path
             with open(temp_file_path, "wb") as buffer:
                 shutil.copyfileobj(up_file.file, buffer)
-            
-            # Add the server-side path to our list
             file_paths.append(temp_file_path)
             print(f"Saved file to temporary path: {temp_file_path}")
 
-        # --- 2. Read the question from the saved question.txt file ---
+        # 5. Read question text
         question_path = next(
-            (p for p in file_paths if re.search(r'question', p, re.IGNORECASE)),
+            (p for p in file_paths if "question" in os.path.basename(p).lower()),
             None
         )
-        if not question_path:
-            raise HTTPException(status_code=400, detail="A file containing 'question' in its name is required.")
-        
         with open(question_path, "r") as f:
             question_text = f.read()
 
-        # --- 3. Invoke the agent with the correct initial state ---
-        # THIS SECTION IS UNCHANGED, AS REQUESTED
-        print(f"Invoking agent with files: {file_paths}")
-        
+        # 6. Invoke your agent
         initial_state = {
-             "original_question": question_text,
+            "original_question": question_text,
             "question": question_text,
             "file_paths": file_paths,
             "messages": [],
@@ -265,15 +280,120 @@ async def analyze_route(
             "image_b64_data": [],
             "dataframe_for_analysis": None,
         }
-        
-        try:
-            # THIS SECTION IS UNCHANGED, AS REQUESTED
-            final_state = await agent_app.ainvoke(initial_state)
-            output_str = final_state.get("final_answer", "No result found.")
-            return {"output": output_str}
 
+        try:
+            final_state = await agent_app.ainvoke(initial_state)
+            
+            # The final result is now in the 'execution_result' key.
+            output_str = final_state.get("final_answer", "No result found.")
+
+
+            # match = re.search(r"\{.*\}", output_str, re.DOTALL)
+            # if match:
+            #     dict_str = match.group(0)
+
+            #     # 2. Convert string dict -> real Python dict
+            #     data = ast.literal_eval(dict_str)
+
+            #     # 3. Now you can use it like a dictionary
+            #     print(type(data))       # <class 'dict'>
+            #     print(data.keys())      # dict_keys([...])
+
+            output_str=output_str.replace("'",'"')
+            res=json.loads(output_str)
+
+
+            print (f"---------------------------------------------------\n{type(res)}\n---------------------------------------------------")
+            print (f"---------------------------------------------------\n{res}\n---------------------------------------------------")
+
+            return res
+
+
+
+        
         except Exception as e:
-            # THIS SECTION IS UNCHANGED, AS REQUESTED
             import traceback
             print(traceback.format_exc())
             return {"error": f"An error occurred during agent execution: {str(e)}"}
+
+@app.api_route("/debug", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def debug_request_inspector(request: Request):
+    """
+    This endpoint captures and prints the full details of any incoming HTTP request.
+    It's a powerful tool for debugging client-side issues.
+    """
+    print("=========================================================")
+    print("=                INCOMING REQUEST DETAILS               =")
+    print("=========================================================")
+
+    # 1. Basic Request Info
+    print(f"\n[INFO] Method: {request.method}")
+    print(f"[INFO] URL: {request.url}")
+    print(f"[INFO] Client IP: {request.client.host}")
+
+    # 2. Headers
+    # Headers are a dictionary-like object. We can iterate through them.
+    print("\n[HEADERS]")
+    headers_dict = dict(request.headers)
+    if headers_dict:
+        for key, value in headers_dict.items():
+            print(f"  {key}: {value}")
+    else:
+        print("  (No headers received)")
+
+    # 3. Query Parameters
+    # These are the parameters in the URL after the '?' (e.g., /path?id=123)
+    print("\n[QUERY PARAMETERS]")
+    query_params_dict = dict(request.query_params)
+    if query_params_dict:
+        for key, value in query_params_dict.items():
+            print(f"  {key}: {value}")
+    else:
+        print("  (No query parameters)")
+
+    # 4. Request Body
+    # This is the most critical part for debugging POST requests.
+    print("\n[BODY CONTENT]")
+    try:
+        # We first read the raw bytes of the body.
+        body_bytes = await request.body()
+        
+        if not body_bytes:
+            print("  (Body is empty)")
+        else:
+            # Try to interpret the body in different formats
+            
+            # Attempt 1: As JSON
+            try:
+                json_body = await request.json()
+                print("  [Body interpreted as JSON]:")
+                import json
+                print(json.dumps(json_body, indent=2))
+            
+            # Attempt 2: As Form Data (for file uploads)
+            except Exception:
+                try:
+                    form_data = await request.form()
+                    print("  [Body interpreted as Form Data]:")
+                    if form_data:
+                        for key, value in form_data.items():
+                            if hasattr(value, 'filename'): # Check if it's an UploadFile
+                                print(f"  - Field '{key}': File '{value.filename}' ({value.content_type})")
+                            else:
+                                print(f"  - Field '{key}': '{value}'")
+                    else:
+                        print("    (Form data is empty)")
+
+                # Attempt 3: As Raw Text
+                except Exception:
+                    print("  [Body interpreted as Raw Text]:")
+                    print(f"    {body_bytes.decode('utf-8', errors='ignore')}")
+
+    except Exception as e:
+        print(f"  [ERROR] Could not read or parse request body: {e}")
+
+    print("\n=========================================================")
+    
+    # Return a simple confirmation response
+    return {"message": "Request received and details have been logged to the server console."}
+
