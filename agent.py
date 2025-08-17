@@ -1179,7 +1179,7 @@ import pandas as pd
 from io import StringIO
 import matplotlib
 matplotlib.use('Agg')
-import seaborn as sns
+
 
 df = pd.read_csv(StringIO('''{csv_data}'''))
 
