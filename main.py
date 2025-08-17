@@ -298,9 +298,11 @@ async def analyze_route(request: Request):
             #     # 3. Now you can use it like a dictionary
             #     print(type(data))       # <class 'dict'>
             #     print(data.keys())      # dict_keys([...])
-
-            output_str=output_str.replace("'",'"')
-            res=json.loads(output_str)
+            if len(output_str)>10000:
+                output_str=output_str.replace("'",'"')
+                res=json.loads(output_str)
+            else:
+                res=json.loads(output_str)
 
 
             print (f"---------------------------------------------------\n{type(res)}\n---------------------------------------------------")

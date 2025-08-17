@@ -327,7 +327,8 @@ def llm_synthesizer_node(state: AgentState):
 
          ---------------VERY IMPORTANT---------------------
 
-         The final JSON object should map a simplified key (like `Index . question: answer`") 
+         The final result should be a clean JSON object only with the required answer , There will be no code in the output
+        
 
          - Clean up the answers if necessary (e.g., remove unnecessary whitespace or formatting).
          - Ensure your final output is ONLY the raw JSON object, with no surrounding text or markdown.
