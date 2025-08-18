@@ -47,12 +47,12 @@ def generate_install_script(code_string: str) -> str:
 import sys
 import subprocess
 
-print(f"Installing dependencies: {list(packages_to_install)}...")
+
 
 try:
     command = [sys.executable, '-m', 'pip', 'install'] + {package_list_repr}
     subprocess.check_call(command)
-    print("Installation successful.")
+
 except Exception as e:
-    print(f"Error installing packages: {{e}}")
+    print(f"PRBLM installing packages: {{e}}")
 """

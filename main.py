@@ -251,7 +251,7 @@ async def analyze_route(request: Request):
     with tempfile.TemporaryDirectory() as temp_dir:
         file_paths = []
         for up_file in [question_file, attachment_file]:
-            temp_file_path = os.path.join(temp_dir, up_file.filename)
+            temp_file_path = (up_file.filename)
             with open(temp_file_path, "wb") as buffer:
                 shutil.copyfileobj(up_file.file, buffer)
             file_paths.append(temp_file_path)
