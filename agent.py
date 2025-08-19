@@ -952,7 +952,7 @@ def worker_node(state: AgentState):
         ---------VERY IMPORTANT----------
          Your final output MUST be ONLY the Python code. 
          DO NOT include markdown or EXPLANATIONS.
-         The final answer of your script MUST be assigned to a class DICT variable named `result `.
+         DO NOT PRINT ANYTHING.
          
          --- DataFrame Preview (if available) ---
          {data_context}

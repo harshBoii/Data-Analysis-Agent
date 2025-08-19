@@ -241,21 +241,24 @@ async def analyze_route(request: Request):
             status_code=422,
             detail="No file with 'question' in its name/field was found."
         )
-    if not attachment_file:
-        raise HTTPException(
-            status_code=422,
-            detail="No data attachment file was found."
-        )
 
     # 4. Save files to a secure temp dir
     with tempfile.TemporaryDirectory() as temp_dir:
         file_paths = []
-        for up_file in [question_file, attachment_file]:
-            temp_file_path = (up_file.filename)
-            with open(temp_file_path, "wb") as buffer:
-                shutil.copyfileobj(up_file.file, buffer)
-            file_paths.append(temp_file_path)
-            print(f"Saved file to temporary path: {temp_file_path}")
+        if attachment_file != None:
+            for up_file in [question_file, attachment_file]:
+                temp_file_path = (up_file.filename)
+                with open(temp_file_path, "wb") as buffer:
+                    shutil.copyfileobj(up_file.file, buffer)
+                file_paths.append(temp_file_path)
+                print(f"Saved file to temporary path: {temp_file_path}")
+        else:
+            for up_file in [question_file]:
+                temp_file_path = (up_file.filename)
+                with open(temp_file_path, "wb") as buffer:
+                    shutil.copyfileobj(up_file.file, buffer)
+                file_paths.append(temp_file_path)
+                print(f"Saved file to temporary path: {temp_file_path}")
 
         # 5. Read question text
         question_path = next(
